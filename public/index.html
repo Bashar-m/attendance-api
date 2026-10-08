@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>نظام الحضور</title>
+    <link rel="stylesheet" href="style.css" />
+    <!--
+      لا يوجد أي JavaScript داخل هذا الملف، ولا onclick على أي زر.
+      السبب: ترويسة Content-Security-Policy التي يضيفها helmet تمنع المتصفح
+      من تنفيذ أي سكربت مكتوب داخل الصفحة. كل المنطق في app.js.
+      defer = نفّذ السكربت بعد اكتمال تحميل الصفحة.
+    -->
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <!-- ثلاث شاشات في صفحة واحدة، و app.js يُظهر واحدة منها حسب حالة المستخدم -->
+
+    <!-- ═════════ شاشة الدخول ═════════ -->
+    <main id="view-login" class="center" hidden>
+      <form id="login-form" class="card login-card">
+        <h1>نظام الحضور</h1>
+        <p class="muted">سجّل دخولك للمتابعة</p>
+        <label>
+          اسم المستخدم
+          <input name="username" autocomplete="username" required autofocus />
+        </label>
+        <label>
+          كلمة المرور
+          <input name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <p id="login-error" class="error" role="alert" hidden></p>
+        <button class="btn primary" type="submit">دخول</button>
+      </form>
+    </main>
+
+    <!-- ═════════ الشريط العلوي (للشاشتين التاليتين) ═════════ -->
+    <header id="topbar" class="topbar" hidden>
+      <strong>نظام الحضور</strong>
+      <span class="spacer"></span>
+      <span id="user-name" class="muted"></span>
+      <button id="logout" class="btn ghost" type="button">خروج</button>
+    </header>
+
+    <!-- ═════════ شاشة الموظف ═════════ -->
+    <main id="view-employee" class="container narrow" hidden>
+      <section class="card punch">
+        <div id="clock" class="clock">--:--:--</div>
+        <div id="today-date" class="muted"></div>
+
+        <div class="punch-times">
+          <div>
+            <span class="muted">الحضور</span>
+            <b id="today-in">—</b>
+          </div>
+          <div>
+            <span class="muted">الانصراف</span>
+            <b id="today-out">—</b>
+          </div>
+          <div>
+            <span class="muted">المدة</span>
+            <b id="today-duration">—</b>
+          </div>
+        </div>
+
+        <button id="punch-button" class="btn punch-button" type="button" disabled>...</button>
+        <p id="punch-message" class="muted" role="status"></p>
+      </section>
+
+      <section class="card">
+        <h2>سجلّي</h2>
+        <!-- "من" وحده = ذلك اليوم فقط. "إلى" لا يُفعَّل قبل تحديد "من". -->
+        <form id="my-form" class="toolbar">
+          <label class="inline">من <input name="from" type="date" /></label>
+          <label class="inline">إلى <input name="to" type="date" disabled /></label>
+          <button class="btn primary" type="submit">عرض</button>
+          <span class="spacer"></span>
+          <span class="stat"><b id="my-count">0</b> سجل</span>
+          <span class="stat"><b id="my-hours">—</b></span>
+        </form>
+        <p id="my-error" class="error" role="alert" hidden></p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>اليوم</th>
+                <th>الحضور</th>
+                <th>الانصراف</th>
+                <th>المدة</th>
+              </tr>
+            </thead>
+            <tbody id="my-records"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <!-- ═════════ شاشة الإدارة ═════════ -->
+    <main id="view-admin" class="container" hidden>
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="daily" type="button">كشف اليوم</button>
+        <button class="tab" data-tab="employees" type="button">الموظفون</button>
+        <button class="tab" data-tab="log" type="button">السجل</button>
+      </nav>
+
+      <!-- كشف اليوم: بديل ورقة الحضور -->
+      <section id="tab-daily" class="card">
+        <div class="toolbar">
+          <label class="inline">
+            التاريخ
+            <input id="daily-date" type="date" />
+          </label>
+          <button id="daily-refresh" class="btn ghost" type="button">تحديث</button>
+          <span class="spacer"></span>
+          <span class="stat"><b id="stat-present">0</b> في الدوام</span>
+          <span class="stat"><b id="stat-left">0</b> انصرفوا</span>
+          <span class="stat warn"><b id="stat-absent">0</b> لم يحضروا</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>الموظف</th>
+                <th>الحالة</th>
+                <th>الحضور</th>
+                <th>الانصراف</th>
+                <th>المدة</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="daily-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- الموظفون -->
+      <section id="tab-employees" class="card" hidden>
+        <form id="user-form" class="toolbar">
+          <input name="name" placeholder="الاسم الكامل" required maxlength="80" />
+          <input name="username" placeholder="اسم المستخدم (إنجليزي)" required pattern="[A-Za-z0-9._\-]{3,30}" />
+          <input name="password" type="text" placeholder="كلمة المرور (6+)" required minlength="6" autocomplete="off" />
+          <button class="btn primary" type="submit">إضافة موظف</button>
+        </form>
+        <p id="user-error" class="error" role="alert" hidden></p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>الاسم</th>
+                <th>اسم المستخدم</th>
+                <th>الدور</th>
+                <th>الحالة</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="user-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- السجل -->
+      <section id="tab-log" class="card" hidden>
+        <form id="log-form" class="toolbar">
+          <label class="inline">من <input name="from" type="date" /></label>
+          <label class="inline">إلى <input name="to" type="date" disabled /></label>
+          <label class="inline">
+            الموظف
+            <select name="employee" id="log-employee">
+              <option value="">الكل</option>
+            </select>
+          </label>
+          <button class="btn primary" type="submit">عرض</button>
+          <span class="spacer"></span>
+          <span class="stat"><b id="log-count">0</b> سجل</span>
+          <span class="stat"><b id="log-hours">—</b></span>
+        </form>
+        <p id="log-error" class="error" role="alert" hidden></p>
+        <!-- بطاقة لكل موظف عند عرض "الكل"؛ الضغط عليها يختار ذلك الموظف -->
+        <div id="log-cards" class="emp-cards" hidden></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>اليوم</th>
+                <th>الموظف</th>
+                <th>الحضور</th>
+                <th>الانصراف</th>
+                <th>المدة</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="log-rows"></tbody>
+          </table>
+        </div>
+        <div class="toolbar pager">
+          <button id="log-prev" class="btn ghost" type="button">السابق</button>
+          <span id="log-page" class="muted"></span>
+          <button id="log-next" class="btn ghost" type="button">التالي</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- نافذة التصحيح اليدوي (عنصر dialog مبني في المتصفح، بلا مكتبات) -->
+    <dialog id="edit-dialog">
+      <form id="edit-form" class="dialog-body">
+        <h2 id="edit-title">تعديل السجل</h2>
+        <p id="edit-subtitle" class="muted"></p>
+        <label>
+          وقت الحضور
+          <input name="checkIn" type="time" required />
+        </label>
+        <label>
+          وقت الانصراف
+          <input name="checkOut" type="time" />
+        </label>
+        <p class="muted small">اترك وقت الانصراف فارغًا إن كان الموظف ما زال في الدوام.</p>
+        <p id="edit-error" class="error" role="alert" hidden></p>
+        <div class="toolbar">
+          <button class="btn primary" type="submit">حفظ</button>
+          <button class="btn ghost" type="button" id="edit-cancel">إلغاء</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>
