@@ -14,8 +14,6 @@
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
-    "seed": "nest build && node dist/seed.js",
-    "seed:clear": "nest build && node dist/seed.js --clear",
     "lint": "oxlint src/ test/",
     "test": "vitest run",
     "test:watch": "vitest",
