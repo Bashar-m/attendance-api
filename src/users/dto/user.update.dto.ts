@@ -6,6 +6,7 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { IsWeekendDays } from '../../common/decorators/is-weekend-days.decorator.js';
 
 /**
  * كل الحقول اختيارية: الإدارة ترسل ما تريد تغييره فقط (PATCH).
@@ -32,4 +33,10 @@ export class UserUpdateDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  // مصفوفة => أيام عطلة خاصة بالموظف. null => عُد إلى العطلة الافتراضية.
+  // @IsOptional يتخطّى الفحص حين تكون القيمة null، فتمرّ كما هي.
+  @IsOptional()
+  @IsWeekendDays()
+  weekendDays?: number[] | null;
 }

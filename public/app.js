@@ -67,15 +67,31 @@ const formatDay = (workDate) => dayFormat.format(new Date(`${workDate}T00:00:00Z
 
 // بترقيم JavaScript كما يخزّنه الخادم: 0 = الأحد ... 6 = السبت
 const WEEKDAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-const isHoliday = (workDate) =>
-  state.weekendDays.includes(new Date(`${workDate}T00:00:00Z`).getUTCDay());
+const WEEK_ORDER = [6, 0, 1, 2, 3, 4, 5]; // نعرض الأسبوع بدءًا من السبت
+const dayNames = (days) => (days.length ? days.map((day) => WEEKDAYS[day]).join('، ') : 'بلا عطلة');
 
-/** علامة يوم العطلة: السجل يبقى ظاهرًا، لكنه خارج مجموع الساعات. */
-function holidayMark(workDate) {
-  return isHoliday(workDate)
+/**
+ * علامة يوم العطلة: السجل يبقى ظاهرًا، لكنه خارج مجموع الساعات.
+ * record.holiday يحسبه الخادم بأيام عطلة صاحب السجل نفسه.
+ */
+function holidayMark(record) {
+  return record.holiday
     ? el('span', { className: 'edited', title: 'يوم عطلة: لا يدخل في مجموع الساعات' }, '(عطلة)')
     : null;
 }
+
+/** مربعات اختيار لأيام الأسبوع، و checkedDays يقرأ المختار منها. */
+function dayCheckboxes(container, selected) {
+  container.replaceChildren(
+    ...WEEK_ORDER.map((day) =>
+      el('label', { className: 'inline' },
+        el('input', { type: 'checkbox', value: day, checked: selected.includes(day) }),
+        WEEKDAYS[day],
+      )),
+  );
+}
+const checkedDays = (container) =>
+  [...container.querySelectorAll('input:checked')].map((box) => Number(box.value));
 
 /** مدة بالميلي ثانية => "7س 05د" */
 function formatMs(ms) {
@@ -131,7 +147,8 @@ const state = {
   log: { page: 1, pages: 1 },
   editing: null,
   employees: [], // للإدارة: قائمة الموظفين في نافذة التصدير
-  weekendDays: [], // أيام العطلة الأسبوعية من إعدادات الخادم
+  weekendDays: [], // للإدارة: أيام العطلة الافتراضية من الإعدادات
+  weekendUser: null, // الموظف المفتوحة نافذة أيام عطلته
 };
 
 const serverNow = () => new Date(Date.now() + state.clockOffset);
@@ -210,11 +227,11 @@ function logout() {
 
 async function enter() {
   $('user-name').textContent = state.user.name;
-  ({ weekendDays: state.weekendDays } = await api('/settings'));
   // إخفاء شاشة الإدارة عن الموظف هنا للراحة فقط وليس حماية:
   // الحماية الحقيقية في الخادم (RolesGuard)، وأي أحد يستطيع تعديل هذا الملف.
   if (state.user.role === 'admin') {
     show('admin');
+    ({ weekendDays: state.weekendDays } = await api('/settings'));
     await Promise.all([loadDaily(), loadUsers()]);
   } else {
     show('employee');
@@ -280,7 +297,7 @@ async function loadMine() {
     $('my-records'),
     mine.items.map((record) =>
       el('tr', {},
-        el('td', {}, formatDay(record.workDate), holidayMark(record.workDate)),
+        el('td', {}, formatDay(record.workDate), holidayMark(record)),
         el('td', {}, formatTime(record.checkIn)),
         el('td', {}, formatTime(record.checkOut)),
         el('td', {}, record.checkOut ? formatDuration(record.checkIn, record.checkOut) : '—'),
@@ -419,15 +436,16 @@ async function loadDaily() {
   const date = $('daily-date').value;
   const data = await api(`/attendance/daily${date ? `?date=${date}` : ''}`);
   $('daily-date').value = data.workDate;
-  $('daily-holiday').hidden = !data.holiday;
+  // الشارة حين يكون اليوم عطلة للجميع؛ وإلا تكفي حالة كل موظف في سطره.
+  $('daily-holiday').hidden = !(data.rows.length && data.rows.every((row) => row.holiday));
 
   const counts = { present: 0, left: 0, absent: 0, holiday: 0 };
 
-  const rows = data.rows.map(({ employee, attendance }) => {
-    // في يوم العطلة من لم يحضر ليس غائبًا.
+  const rows = data.rows.map(({ employee, attendance, holiday }) => {
+    // من لم يحضر في يوم عطلته ليس غائبًا.
     const status = attendance
       ? (attendance.checkOut ? 'left' : 'present')
-      : (data.holiday ? 'holiday' : 'absent');
+      : (holiday ? 'holiday' : 'absent');
     counts[status] += 1;
     const label = { absent: 'لم يحضر', present: 'في الدوام', left: 'انصرف', holiday: 'عطلة' }[status];
 
@@ -474,8 +492,18 @@ async function loadUsers() {
       const exportButton = el('button', { className: 'btn ghost small', type: 'button' }, 'تصدير Excel');
       exportButton.addEventListener('click', () => openExport({ employee: user._id }));
 
-      actions.append(exportButton, reset, toggle);
+      const weekend = el('button', { className: 'btn ghost small', type: 'button' }, 'أيام العطلة');
+      weekend.addEventListener('click', () => openWeekend(user));
+
+      actions.append(exportButton, weekend, reset, toggle);
     }
+
+    // بلا weekendDays = يتبع العطلة الافتراضية من الإعدادات
+    const weekendText = user.role !== 'employee'
+      ? '—'
+      : user.weekendDays
+        ? dayNames(user.weekendDays)
+        : `الافتراضي (${dayNames(state.weekendDays)})`;
 
     return el('tr', {},
       el('td', {}, user.name),
@@ -483,10 +511,11 @@ async function loadUsers() {
       el('td', {}, user.role === 'admin' ? 'مدير' : 'موظف'),
       el('td', {}, el('span', { className: `badge ${user.isActive ? 'present' : 'off'}` },
         user.isActive ? 'فعّال' : 'معطّل')),
+      el('td', { className: user.weekendDays ? '' : 'muted' }, weekendText),
       actions,
     );
   });
-  fillTable($('user-rows'), rows, 'لا يوجد مستخدمون', 5);
+  fillTable($('user-rows'), rows, 'لا يوجد مستخدمون', 6);
 
   state.employees = users.filter((user) => user.role === 'employee');
 
@@ -583,7 +612,7 @@ async function loadLog() {
       openEdit({ workDate: record.workDate, employee: record.employee, attendance: record }));
 
     return el('tr', {},
-      el('td', {}, formatDay(record.workDate), holidayMark(record.workDate)),
+      el('td', {}, formatDay(record.workDate), holidayMark(record)),
       el('td', {}, record.employee?.name ?? '(محذوف)'),
       el('td', {}, formatTime(record.checkIn), editedMark(record)),
       el('td', {}, formatTime(record.checkOut)),
@@ -664,42 +693,66 @@ $('edit-form').addEventListener('submit', async (event) => {
   }
 });
 
-// ───── الإعدادات: أيام العطلة ─────
-
-const WEEK_ORDER = [6, 0, 1, 2, 3, 4, 5]; // نعرض الأسبوع بدءًا من السبت
+// ───── الإعدادات: أيام العطلة الافتراضية ─────
 
 function renderSettings() {
-  $('weekend-days').replaceChildren(
-    ...WEEK_ORDER.map((day) =>
-      el('label', { className: 'inline' },
-        el('input', {
-          type: 'checkbox',
-          name: 'weekendDays',
-          value: day,
-          checked: state.weekendDays.includes(day),
-        }),
-        WEEKDAYS[day],
-      )),
-  );
+  dayCheckboxes($('weekend-days'), state.weekendDays);
   $('settings-message').textContent = '';
   showError($('settings-error'), null);
 }
 
 $('settings-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const boxes = event.currentTarget.querySelectorAll('[name="weekendDays"]:checked');
-  const weekendDays = [...boxes].map((box) => Number(box.value));
-
   $('settings-message').textContent = '';
   showError($('settings-error'), null);
   try {
     ({ weekendDays: state.weekendDays } = await api('/settings', {
       method: 'PATCH',
-      body: { weekendDays },
+      body: { weekendDays: checkedDays($('weekend-days')) },
     }));
     $('settings-message').textContent = 'تم الحفظ';
+    // نصّ "الافتراضي (...)" في تبويب الموظفين يتغيّر معها.
+    await loadUsers();
   } catch (error) {
     showError($('settings-error'), error.message);
+  }
+});
+
+// ───── أيام عطلة موظف بعينه ─────
+
+function openWeekend(user) {
+  state.weekendUser = user;
+  const form = $('weekend-form');
+  $('weekend-subtitle').textContent = user.name;
+  $('weekend-default-days').textContent = dayNames(state.weekendDays);
+  form.useDefault.checked = !user.weekendDays;
+  dayCheckboxes($('weekend-user-days'), user.weekendDays ?? state.weekendDays);
+  syncWeekendForm();
+  showError($('weekend-error'), null);
+  $('weekend-dialog').showModal();
+}
+
+/** "اتّباع الافتراضي" يعطّل مربعات الأيام: لا معنى لها حينها. */
+function syncWeekendForm() {
+  const useDefault = $('weekend-form').useDefault.checked;
+  for (const box of $('weekend-user-days').querySelectorAll('input')) box.disabled = useDefault;
+}
+
+$('weekend-form').useDefault.addEventListener('change', syncWeekendForm);
+$('weekend-cancel').addEventListener('click', () => $('weekend-dialog').close());
+
+$('weekend-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  // null = عُد إلى العطلة الافتراضية
+  const weekendDays = event.currentTarget.useDefault.checked
+    ? null
+    : checkedDays($('weekend-user-days'));
+  try {
+    await api(`/users/${state.weekendUser._id}`, { method: 'PATCH', body: { weekendDays } });
+    $('weekend-dialog').close();
+    await Promise.all([loadUsers(), reloadActiveTab()]);
+  } catch (error) {
+    showError($('weekend-error'), error.message);
   }
 });
 

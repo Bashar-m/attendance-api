@@ -153,6 +153,7 @@
                 <th>اسم المستخدم</th>
                 <th>الدور</th>
                 <th>الحالة</th>
+                <th>أيام العطلة</th>
                 <th></th>
               </tr>
             </thead>
@@ -207,9 +208,10 @@
       <!-- الإعدادات -->
       <section id="tab-settings" class="card" hidden>
         <form id="settings-form">
-          <h2>أيام العطلة الأسبوعية</h2>
+          <h2>أيام العطلة الافتراضية</h2>
           <p class="muted small">
-            سجلات هذه الأيام لا تدخل مجموع الساعات ولا ملف Excel، وكشف اليوم لا يعدّ أحدًا غائبًا فيها.
+            تسري على كل موظف لم تُحدَّد له أيام عطلة خاصة من تبويب «الموظفون».
+            سجلات أيام العطلة لا تدخل مجموع الساعات ولا ملف Excel، ولا يُعدّ أحد غائبًا فيها.
           </p>
           <div id="weekend-days" class="day-checks"></div>
           <p id="settings-error" class="error" role="alert" hidden></p>
@@ -233,6 +235,25 @@
         <div class="toolbar">
           <button class="btn primary" type="submit">تسجيل الانصراف</button>
           <button class="btn ghost" type="button" id="checkout-cancel">إلغاء</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- نافذة أيام عطلة موظف بعينه -->
+    <dialog id="weekend-dialog">
+      <form id="weekend-form" class="dialog-body">
+        <h2>أيام العطلة</h2>
+        <p id="weekend-subtitle" class="muted"></p>
+        <label class="inline">
+          <input name="useDefault" type="checkbox" />
+          <!-- النص كله في عنصر واحد: label.inline مرن (flex)، وكل جزء منفصل يأخذ فراغًا حوله -->
+          <span>اتّباع العطلة الافتراضية (<span id="weekend-default-days"></span>)</span>
+        </label>
+        <div id="weekend-user-days" class="day-checks"></div>
+        <p id="weekend-error" class="error" role="alert" hidden></p>
+        <div class="toolbar">
+          <button class="btn primary" type="submit">حفظ</button>
+          <button class="btn ghost" type="button" id="weekend-cancel">إلغاء</button>
         </div>
       </form>
     </dialog>

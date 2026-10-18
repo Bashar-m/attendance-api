@@ -148,7 +148,7 @@ export class AttendanceService {
         : query.from;
     }
 
-    const { weekendDays } = await this.settingsService.get();
+    const weekendDaysOf = await this.weekendDaysByEmployee();
 
     // الصفحة والعدد الكلي والمجاميع استعلامات مستقلة، فنشغّلها معًا لا بالتتابع.
     const [items, total, totals] = await Promise.all([
@@ -159,10 +159,10 @@ export class AttendanceService {
         .limit(query.limit)
         // populate يستبدل معرّف الموظف بمستنده (الحقول المحدّدة فقط).
         // هو المقابل لـ JOIN، لكنه استعلام ثانٍ ينفّذه Mongoose.
-        .populate('employee', EMPLOYEE_FIELDS)
+        .populate<{ employee: UserDocument | null }>('employee', EMPLOYEE_FIELDS)
         .exec(),
       this.attendanceModel.countDocuments(filter).exec(),
-      this.totalsByEmployee(filter, weekendDays),
+      this.totalsByEmployee(filter, weekendDaysOf),
     ]);
 
     // المجاميع تغطّي كل ما يطابق الفلتر، لا الصفحة المعروضة فقط.
@@ -170,7 +170,13 @@ export class AttendanceService {
     const workedMs = totals.reduce((sum, row) => sum + row.workedMs, 0);
 
     return {
-      items,
+      // holiday: يوم عطلة لصاحب السجل، فالواجهة تعلّمه "(عطلة)".
+      items: items.map((item) => ({
+        ...item.toJSON(),
+        holiday: weekendDaysOf(item.employee?.id as string).includes(
+          weekdayOf(item.workDate),
+        ),
+      })),
       total,
       page: query.page,
       limit: query.limit,
@@ -182,41 +188,51 @@ export class AttendanceService {
     };
   }
 
-  /** عدد السجلات ومجموع وقت العمل لكل موظف ضمن الفلتر، بلا أيام العطلة. */
-  private totalsByEmployee(
+  /**
+   * أيام عطلة كل موظف: أيامه الخاصة إن حدّدتها الإدارة، وإلا الافتراضية
+   * من الإعدادات. تُرجع دالة: معرّف الموظف => أيام عطلته.
+   */
+  private async weekendDaysByEmployee() {
+    const [{ weekendDays }, users] = await Promise.all([
+      this.settingsService.get(),
+      this.usersService.findAll(),
+    ]);
+    const custom = new Map<string, number[]>();
+    for (const user of users) {
+      if (user.weekendDays) custom.set(user.id as string, user.weekendDays);
+    }
+    return (employeeId: string) => custom.get(employeeId) ?? weekendDays;
+  }
+
+  /** عدد السجلات ومجموع وقت العمل لكل موظف ضمن الفلتر، بلا أيام عطلته. */
+  private async totalsByEmployee(
     filter: QueryFilter<Attendance>,
-    weekendDays: number[],
-  ) {
-    return this.attendanceModel
-      .aggregate<EmployeeTotals>([
+    weekendDaysOf: (employeeId: string) => number[],
+  ): Promise<EmployeeTotals[]> {
+    // أيام العطلة تختلف من موظف لآخر، فلا يكفي شرط واحد في القاعدة.
+    // نجمع حسب الموظف ويوم الأسبوع معًا (7 صفوف لكل موظف على الأكثر)،
+    // ثم نُسقط هنا أيام عطلة كل موظف ونجمع الباقي.
+    const rows = await this.attendanceModel
+      .aggregate<{
+        _id: { employee: Types.ObjectId; weekday: number };
+        records: number;
+        workedMs: number;
+      }>([
         { $match: filter },
-        // $dayOfWeek يعدّ من 1 (الأحد)، و weekendDays من 0 كما في JavaScript.
-        {
-          $match: {
-            $expr: {
-              $not: [
-                {
-                  $in: [
-                    {
-                      $subtract: [
-                        {
-                          $dayOfWeek: {
-                            $dateFromString: { dateString: '$workDate' },
-                          },
-                        },
-                        1,
-                      ],
-                    },
-                    weekendDays,
-                  ],
-                },
-              ],
-            },
-          },
-        },
         {
           $group: {
-            _id: '$employee',
+            _id: {
+              employee: '$employee',
+              // $dayOfWeek يعدّ من 1 (الأحد)، وأيام العطلة من 0 كما في JavaScript.
+              weekday: {
+                $subtract: [
+                  {
+                    $dayOfWeek: { $dateFromString: { dateString: '$workDate' } },
+                  },
+                  1,
+                ],
+              },
+            },
             records: { $sum: 1 },
             // السجل المفتوح (بلا انصراف) لا يُحسب له وقت بعد.
             workedMs: {
@@ -232,6 +248,17 @@ export class AttendanceService {
         },
       ])
       .exec();
+
+    const totals = new Map<string, EmployeeTotals>();
+    for (const { _id, records, workedMs } of rows) {
+      const id = _id.employee.toString();
+      if (weekendDaysOf(id).includes(_id.weekday)) continue;
+      const row = totals.get(id) ?? { _id: _id.employee, records: 0, workedMs: 0 };
+      row.records += records;
+      row.workedMs += workedMs;
+      totals.set(id, row);
+    }
+    return [...totals.values()];
   }
 
   /**
@@ -288,8 +315,8 @@ export class AttendanceService {
     await this.closeStaleRecords();
     const workDate = date ?? toWorkDate(new Date(), this.timeZone);
 
-    const [{ weekendDays }, employees, records] = await Promise.all([
-      this.settingsService.get(),
+    const [weekendDaysOf, employees, records] = await Promise.all([
+      this.weekendDaysByEmployee(),
       this.usersService.findActiveEmployees(),
       this.attendanceModel
         .find({ workDate })
@@ -328,9 +355,15 @@ export class AttendanceService {
       });
     }
 
-    // holiday: الواجهة تعرض من لا سجل له "عطلة" بدل "لم يحضر".
-    const holiday = weekendDays.includes(weekdayOf(workDate));
-    return { workDate, holiday, rows: [...rows.values()] };
+    // holiday لكل موظف على حدة: الواجهة تعرض من لا سجل له "عطلة" بدل "لم يحضر".
+    const weekday = weekdayOf(workDate);
+    return {
+      workDate,
+      rows: [...rows.values()].map((row) => ({
+        ...row,
+        holiday: weekendDaysOf(row.employee.id).includes(weekday),
+      })),
+    };
   }
 
   /** ملف Excel بسجلات موظف واحد في فترة، مع مجموع الساعات في آخره. */
@@ -345,7 +378,7 @@ export class AttendanceService {
     }
 
     await this.closeStaleRecords();
-    const [{ weekendDays }, records] = await Promise.all([
+    const [settings, records] = await Promise.all([
       this.settingsService.get(),
       this.attendanceModel
         .find({
@@ -355,6 +388,8 @@ export class AttendanceService {
         .sort({ workDate: 1 })
         .exec(),
     ]);
+    // أيام الموظف الخاصة إن وُجدت، وإلا الافتراضية.
+    const weekendDays = employee.weekendDays ?? settings.weekendDays;
 
     const file = await buildAttendanceWorkbook({
       employee,

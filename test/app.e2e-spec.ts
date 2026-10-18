@@ -544,6 +544,7 @@ describe('نظام الحضور (e2e)', () => {
       .set(bearer(employeeToken))
       .expect(200);
     expect(mine.body.total).toBe(1);
+    expect(mine.body.items[0].holiday).toBe(true);
     expect(mine.body.workedMs).toBe(0);
 
     const daily = await api()
@@ -551,7 +552,7 @@ describe('نظام الحضور (e2e)', () => {
       .query({ date: '2026-01-05' })
       .set(bearer(adminToken))
       .expect(200);
-    expect(daily.body.holiday).toBe(true);
+    expect(daily.body.rows[0].holiday).toBe(true);
 
     const res = await api()
       .get('/api/attendance/export')
@@ -569,13 +570,65 @@ describe('نظام الحضور (e2e)', () => {
     expect(sheet.getCell('A7').value).toBe('المجموع');
     expect(sheet.getCell('B7').value).toBe('عدد الأيام: 1');
 
-    // الموظف يقرأ الإعدادات ولا يغيّرها.
-    await api().get('/api/settings').set(bearer(employeeToken)).expect(200);
+    // الإعدادات للمدير وحده، قراءةً وتعديلًا.
+    await api().get('/api/settings').set(bearer(employeeToken)).expect(403);
     await api()
       .patch('/api/settings')
       .set(bearer(employeeToken))
       .send({ weekendDays: [] })
       .expect(403);
+  });
+
+  it('أيام عطلة الموظف الخاصة تغلب الافتراضية، و null يعيده إلى الافتراضي', async () => {
+    // الافتراضي ما زال الاثنين، لكن عطلة هذا الموظف الثلاثاء:
+    // سجل 5 يناير (اثنين) يعود إلى الحساب، وسجل 6 يناير (ثلاثاء) يخرج.
+    const user = await api()
+      .patch(`/api/users/${employeeId}`)
+      .set(bearer(adminToken))
+      .send({ weekendDays: [2] })
+      .expect(200);
+    expect(user.body.weekendDays).toEqual([2]);
+
+    const mine = await api()
+      .get('/api/attendance/me')
+      .query({ from: '2026-01-05', to: '2026-01-06' })
+      .set(bearer(employeeToken))
+      .expect(200);
+    expect(mine.body.workedMs).toBe(8 * 3_600_000);
+    const holidayByDay = Object.fromEntries(
+      mine.body.items.map((item: { workDate: string; holiday: boolean }) => [
+        item.workDate,
+        item.holiday,
+      ]),
+    );
+    expect(holidayByDay).toEqual({ '2026-01-05': false, '2026-01-06': true });
+
+    const daily = await api()
+      .get('/api/attendance/daily')
+      .query({ date: '2026-01-06' })
+      .set(bearer(adminToken))
+      .expect(200);
+    expect(daily.body.rows[0].holiday).toBe(true);
+
+    await api()
+      .patch(`/api/users/${employeeId}`)
+      .set(bearer(adminToken))
+      .send({ weekendDays: [9] })
+      .expect(400);
+
+    // null: يُحذف الحقل من حسابه فيعود إلى الافتراضي (الاثنين).
+    const reset = await api()
+      .patch(`/api/users/${employeeId}`)
+      .set(bearer(adminToken))
+      .send({ weekendDays: null })
+      .expect(200);
+    expect(reset.body.weekendDays).toBeUndefined();
+    const again = await api()
+      .get('/api/attendance/me')
+      .query({ from: '2026-01-05' })
+      .set(bearer(employeeToken))
+      .expect(200);
+    expect(again.body.workedMs).toBe(0);
 
     await api()
       .patch('/api/settings')

@@ -10,7 +10,8 @@ export class Settings {
   @Prop({ type: String })
   _id: string;
 
-  // أيام العطلة الأسبوعية بترقيم JavaScript: 0 = الأحد ... 5 = الجمعة، 6 = السبت.
+  // أيام العطلة الأسبوعية الافتراضية بترقيم JavaScript: 0 = الأحد ... 6 = السبت.
+  // تسري على كل موظف لم تُحدَّد له أيام خاصة (User.weekendDays).
   // سجلات هذه الأيام لا تدخل مجموع الساعات ولا ملف Excel.
   @Prop({ type: [Number], default: [5, 6] })
   weekendDays: number[];

@@ -327,8 +327,13 @@ td.empty {
   color: var(--muted);
   padding: 28px;
 }
+/* الأزرار تلتفّ إلى سطر ثانٍ إن ضاقت الخلية بدل أن تخرج عن البطاقة */
 td.actions {
   text-align: end;
+  white-space: normal;
+}
+td.actions .btn {
+  margin-block: 2px;
 }
 /* الملاحظة نص حر قد يطول: يلتفّ داخل الخلية ويحفظ أسطره بدل أن يمدّ الجدول */
 td.note {

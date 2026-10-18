@@ -27,6 +27,13 @@ export class User {
   // نعطّل الحساب بدل حذفه: الحذف يترك سجلات حضور بلا صاحب.
   @Prop({ default: true })
   isActive: boolean;
+
+  // أيام عطلة خاصة بهذا الموظف (0 = الأحد ... 6 = السبت).
+  // غير موجود = يتبع العطلة الافتراضية في الإعدادات.
+  // default: undefined ضروري: بدونه يضع Mongoose مصفوفة فارغة لكل مستخدم،
+  // و [] معناها "بلا عطلة إطلاقًا" لا "الافتراضي".
+  @Prop({ type: [Number], default: undefined })
+  weekendDays?: number[];
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

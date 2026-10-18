@@ -68,16 +68,24 @@ export class UsersService {
 
   async update(id: string, dto: UserUpdateDto): Promise<UserDocument> {
     // نفصل password عن الباقي: هو لا يُحفظ كما هو، بل يتحوّل إلى passwordHash.
-    const { password, ...rest } = dto;
+    const { password, weekendDays, ...rest } = dto;
     const changes: Partial<User> = { ...rest };
     if (password) {
       changes.passwordHash = await hash(password, SALT_ROUNDS);
     }
+    if (weekendDays) {
+      changes.weekendDays = [...weekendDays].sort((a, b) => a - b);
+    }
+    // null = عُد إلى العطلة الافتراضية: نحذف الحقل من المستند كليًّا.
+    const update =
+      weekendDays === null
+        ? { $set: changes, $unset: { weekendDays: 1 } }
+        : { $set: changes };
 
     const user = await this.userModel
       // returnDocument: 'after' => أرجع المستند بعد التعديل لا قبله
       // runValidators => طبّق قواعد الـ Schema على التعديل أيضًا
-      .findByIdAndUpdate(id, changes, {
+      .findByIdAndUpdate(id, update, {
         returnDocument: 'after',
         runValidators: true,
       })
