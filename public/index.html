@@ -101,6 +101,7 @@
         <button class="tab active" data-tab="daily" type="button">كشف اليوم</button>
         <button class="tab" data-tab="employees" type="button">الموظفون</button>
         <button class="tab" data-tab="log" type="button">السجل</button>
+        <button class="tab" data-tab="settings" type="button">الإعدادات</button>
       </nav>
 
       <!-- كشف اليوم: بديل ورقة الحضور -->
@@ -111,6 +112,7 @@
             <input id="daily-date" type="date" />
           </label>
           <button id="daily-refresh" class="btn ghost" type="button">تحديث</button>
+          <span id="daily-holiday" class="badge holiday" hidden>يوم عطلة</span>
           <span class="spacer"></span>
           <span class="stat"><b id="stat-present">0</b> في الدوام</span>
           <span class="stat"><b id="stat-left">0</b> انصرفوا</span>
@@ -125,6 +127,7 @@
                 <th>الحضور</th>
                 <th>الانصراف</th>
                 <th>المدة</th>
+                <th>ملاحظات</th>
                 <th></th>
               </tr>
             </thead>
@@ -170,6 +173,7 @@
             </select>
           </label>
           <button class="btn primary" type="submit">عرض</button>
+          <button id="log-export" class="btn ghost" type="button">تصدير Excel</button>
           <span class="spacer"></span>
           <span class="stat"><b id="log-count">0</b> سجل</span>
           <span class="stat"><b id="log-hours">—</b></span>
@@ -186,6 +190,7 @@
                 <th>الحضور</th>
                 <th>الانصراف</th>
                 <th>المدة</th>
+                <th>ملاحظات</th>
                 <th></th>
               </tr>
             </thead>
@@ -198,7 +203,64 @@
           <button id="log-next" class="btn ghost" type="button">التالي</button>
         </div>
       </section>
+
+      <!-- الإعدادات -->
+      <section id="tab-settings" class="card" hidden>
+        <form id="settings-form">
+          <h2>أيام العطلة الأسبوعية</h2>
+          <p class="muted small">
+            سجلات هذه الأيام لا تدخل مجموع الساعات ولا ملف Excel، وكشف اليوم لا يعدّ أحدًا غائبًا فيها.
+          </p>
+          <div id="weekend-days" class="day-checks"></div>
+          <p id="settings-error" class="error" role="alert" hidden></p>
+          <div class="toolbar">
+            <button class="btn primary" type="submit">حفظ</button>
+            <span id="settings-message" class="muted" role="status"></span>
+          </div>
+        </form>
+      </section>
     </main>
+
+    <!-- نافذة الانصراف: تأكيد + ملاحظة اختيارية تظهر للإدارة -->
+    <dialog id="checkout-dialog">
+      <form id="checkout-form" class="dialog-body">
+        <h2>تسجيل الانصراف</h2>
+        <label>
+          هل هناك ملاحظات؟ (اختياري)
+          <textarea name="note" rows="3" maxlength="500"></textarea>
+        </label>
+        <p id="checkout-error" class="error" role="alert" hidden></p>
+        <div class="toolbar">
+          <button class="btn primary" type="submit">تسجيل الانصراف</button>
+          <button class="btn ghost" type="button" id="checkout-cancel">إلغاء</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- نافذة تصدير Excel: موظف واحد وفترة محددة -->
+    <dialog id="export-dialog">
+      <form id="export-form" class="dialog-body">
+        <h2>تصدير Excel</h2>
+        <label>
+          الموظف
+          <select name="employee" required></select>
+        </label>
+        <label>
+          من
+          <input name="from" type="date" required />
+        </label>
+        <label>
+          إلى
+          <input name="to" type="date" required />
+        </label>
+        <p class="muted small">ملف بسجلات الموظف في هذه الفترة، وفي آخره مجموع الساعات.</p>
+        <p id="export-error" class="error" role="alert" hidden></p>
+        <div class="toolbar">
+          <button class="btn primary" type="submit">تصدير</button>
+          <button class="btn ghost" type="button" id="export-cancel">إلغاء</button>
+        </div>
+      </form>
+    </dialog>
 
     <!-- نافذة التصحيح اليدوي (عنصر dialog مبني في المتصفح، بلا مكتبات) -->
     <dialog id="edit-dialog">

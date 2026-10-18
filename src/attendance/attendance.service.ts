@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, QueryFilter, Types } from 'mongoose';
 import { isDuplicateKeyError } from '../common/mongo-errors.js';
+import { SettingsService } from '../settings/settings.service.js';
 import { Role } from '../users/role.enum.js';
 import { UserDocument } from '../users/schema/user.schema.js';
 import { UsersService } from '../users/users.service.js';
@@ -15,9 +16,13 @@ import {
   AttendanceCreateDto,
   AttendanceUpdateDto,
 } from './dto/attendance.manual.dto.js';
-import { AttendanceQueryDto } from './dto/attendance.query.dto.js';
+import { buildAttendanceWorkbook } from './attendance.export.js';
+import {
+  AttendanceExportQueryDto,
+  AttendanceQueryDto,
+} from './dto/attendance.query.dto.js';
 import { Attendance } from './schema/attendance.schema.js';
-import { toWorkDate } from './work-date.js';
+import { toWorkDate, weekdayOf } from './work-date.js';
 
 // الحقول التي نجلبها من الموظف عند populate: الاسم فقط، لا شيء حساس.
 const EMPLOYEE_FIELDS = 'name username';
@@ -32,6 +37,7 @@ export class AttendanceService {
     @InjectModel(Attendance.name)
     private readonly attendanceModel: Model<Attendance>,
     private readonly usersService: UsersService,
+    private readonly settingsService: SettingsService,
     config: ConfigService,
   ) {
     this.timeZone = config.get<string>('APP_TIMEZONE') ?? 'Asia/Damascus';
@@ -65,8 +71,8 @@ export class AttendanceService {
     }
   }
 
-  /** تسجيل الانصراف: يغلق سجل اليوم المفتوح. */
-  async checkOut(employeeId: string) {
+  /** تسجيل الانصراف: يغلق سجل اليوم المفتوح، مع ملاحظة اختيارية. */
+  async checkOut(employeeId: string, note?: string) {
     const now = new Date();
     const employee = new Types.ObjectId(employeeId);
     const workDate = toWorkDate(now, this.timeZone);
@@ -77,7 +83,9 @@ export class AttendanceService {
     const record = await this.attendanceModel
       .findOneAndUpdate(
         { employee, workDate, checkOut: null },
-        { checkOut: now },
+        // بلا ملاحظة لا نلمس الحقل: إن أعادت الإدارة فتح السجل ثم انصرف
+        // الموظف مجددًا دون ملاحظة، تبقى ملاحظته الأولى.
+        { checkOut: now, ...(note ? { note } : {}) },
         { returnDocument: 'after' },
       )
       .exec();
@@ -140,6 +148,8 @@ export class AttendanceService {
         : query.from;
     }
 
+    const { weekendDays } = await this.settingsService.get();
+
     // الصفحة والعدد الكلي والمجاميع استعلامات مستقلة، فنشغّلها معًا لا بالتتابع.
     const [items, total, totals] = await Promise.all([
       this.attendanceModel
@@ -152,10 +162,11 @@ export class AttendanceService {
         .populate('employee', EMPLOYEE_FIELDS)
         .exec(),
       this.attendanceModel.countDocuments(filter).exec(),
-      this.totalsByEmployee(filter),
+      this.totalsByEmployee(filter, weekendDays),
     ]);
 
     // المجاميع تغطّي كل ما يطابق الفلتر، لا الصفحة المعروضة فقط.
+    // سجلات أيام العطلة تظهر في القائمة لكنها خارج المجاميع.
     const workedMs = totals.reduce((sum, row) => sum + row.workedMs, 0);
 
     return {
@@ -171,11 +182,38 @@ export class AttendanceService {
     };
   }
 
-  /** عدد السجلات ومجموع وقت العمل لكل موظف ضمن الفلتر. */
-  private totalsByEmployee(filter: QueryFilter<Attendance>) {
+  /** عدد السجلات ومجموع وقت العمل لكل موظف ضمن الفلتر، بلا أيام العطلة. */
+  private totalsByEmployee(
+    filter: QueryFilter<Attendance>,
+    weekendDays: number[],
+  ) {
     return this.attendanceModel
       .aggregate<EmployeeTotals>([
         { $match: filter },
+        // $dayOfWeek يعدّ من 1 (الأحد)، و weekendDays من 0 كما في JavaScript.
+        {
+          $match: {
+            $expr: {
+              $not: [
+                {
+                  $in: [
+                    {
+                      $subtract: [
+                        {
+                          $dayOfWeek: {
+                            $dateFromString: { dateString: '$workDate' },
+                          },
+                        },
+                        1,
+                      ],
+                    },
+                    weekendDays,
+                  ],
+                },
+              ],
+            },
+          },
+        },
         {
           $group: {
             _id: '$employee',
@@ -250,7 +288,8 @@ export class AttendanceService {
     await this.closeStaleRecords();
     const workDate = date ?? toWorkDate(new Date(), this.timeZone);
 
-    const [employees, records] = await Promise.all([
+    const [{ weekendDays }, employees, records] = await Promise.all([
+      this.settingsService.get(),
       this.usersService.findActiveEmployees(),
       this.attendanceModel
         .find({ workDate })
@@ -289,7 +328,49 @@ export class AttendanceService {
       });
     }
 
-    return { workDate, rows: [...rows.values()] };
+    // holiday: الواجهة تعرض من لا سجل له "عطلة" بدل "لم يحضر".
+    const holiday = weekendDays.includes(weekdayOf(workDate));
+    return { workDate, holiday, rows: [...rows.values()] };
+  }
+
+  /** ملف Excel بسجلات موظف واحد في فترة، مع مجموع الساعات في آخره. */
+  async exportEmployee(query: AttendanceExportQueryDto) {
+    if (query.to < query.from) {
+      throw new BadRequestException('تاريخ النهاية يجب ألا يسبق تاريخ البداية');
+    }
+
+    const employee = await this.usersService.findById(query.employee);
+    if (!employee || employee.role !== Role.Employee) {
+      throw new NotFoundException('الموظف غير موجود');
+    }
+
+    await this.closeStaleRecords();
+    const [{ weekendDays }, records] = await Promise.all([
+      this.settingsService.get(),
+      this.attendanceModel
+        .find({
+          employee: employee._id,
+          workDate: { $gte: query.from, $lte: query.to },
+        })
+        .sort({ workDate: 1 })
+        .exec(),
+    ]);
+
+    const file = await buildAttendanceWorkbook({
+      employee,
+      from: query.from,
+      to: query.to,
+      // أيام العطلة لا تظهر في الملف ولا تدخل مجموعه.
+      records: records.filter(
+        (record) => !weekendDays.includes(weekdayOf(record.workDate)),
+      ),
+      weekendDays,
+      timeZone: this.timeZone,
+    });
+    // اسم المستخدم حروف لاتينية وأرقام فقط (انظر UserCreateDto)،
+    // فيصلح اسمًا للملف وفي ترويسة HTTP دون ترميز.
+    const filename = `attendance-${employee.username}-${query.from}_${query.to}.xlsx`;
+    return { file, filename };
   }
 
   // ───────────────────────── تصحيح الإدارة ─────────────────────────

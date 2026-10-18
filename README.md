@@ -33,12 +33,14 @@ Built with NestJS and MongoDB, with a dependency-free HTML/JS front end served b
 
 - **Daily sheet:** every active employee on one page, present or not, for any date.
 - **Records:** filter by day, date range or employee, with worked-hours totals per employee.
+- **Weekly days off:** chosen in the Settings tab (Friday and Saturday by default). Records on those days stay visible but are left out of hour totals and the Excel file, and the daily sheet shows nobody as absent.
+- **Excel export:** one file per employee for a chosen date range, with check-in, check-out, duration and note for each day, and the total hours at the end.
 - **Manual corrections:** add a record for someone who forgot, or fix an existing one. Every correction is stamped with who made it and when.
 - **Accounts:** create employees, reset passwords, deactivate and reactivate.
 
 **Built in**
 
-- Time always comes from the server; the check-in and check-out endpoints read no request body.
+- Time always comes from the server. Check-in reads no request body; check-out accepts only an optional `note` (max 500 characters), shown to admins on the daily sheet and in the records log.
 - One record per employee per day, enforced by a unique database index, so double clicks and concurrent requests cannot create duplicates.
 - Role-based access (admin / employee) with JWT; every route is protected unless explicitly marked public.
 - Deactivating an account takes effect on the next request, not when the token expires.
@@ -112,13 +114,16 @@ All routes are prefixed with `/api` and require `Authorization: Bearer <token>`,
 | `GET` | `/users` | admin | List users |
 | `PATCH` | `/users/:id` | admin | Rename, reset password, activate / deactivate |
 | `POST` | `/attendance/check-in` | employee | Check in (no body) |
-| `POST` | `/attendance/check-out` | employee | Check out (no body) |
+| `POST` | `/attendance/check-out` | employee | Check out; optional body `{ "note": "..." }` |
 | `GET` | `/attendance/today` | employee | Today's record and server time |
 | `GET` | `/attendance/me` | employee | Own records |
 | `GET` | `/attendance/daily` | admin | Every employee and their record for `?date=` (default: today) |
 | `GET` | `/attendance` | admin | Records with filters and totals |
 | `POST` | `/attendance` | admin | Add a record manually |
 | `PATCH` | `/attendance/:id` | admin | Correct a record |
+| `GET` | `/settings` | any | Weekly days off: `{ "weekendDays": [5, 6] }` (0 = Sunday … 6 = Saturday) |
+| `PATCH` | `/settings` | admin | Change the weekly days off |
+| `GET` | `/attendance/export` | admin | Excel file for one employee: `?employee=<id>&from=YYYY-MM-DD&to=YYYY-MM-DD`, total hours at the end |
 
 **Filters** for `/attendance` and `/attendance/me`: `from`, `to` (`YYYY-MM-DD`), `employee` (admin only), `page`, `limit` (max 100). `from` alone means that single day; `from` with `to` means a range.
 

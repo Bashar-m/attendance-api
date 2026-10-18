@@ -2,6 +2,7 @@ import { getConnectionToken } from '@nestjs/mongoose';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import { ThrottlerGuard } from '@nestjs/throttler';
+import ExcelJS from 'exceljs';
 import { Types, type Connection } from 'mongoose';
 import request from 'supertest';
 import { AppModule } from '../src/app.module.js';
@@ -25,6 +26,17 @@ const EMPLOYEE = {
   name: 'موظف تجريبي',
   username: 'sami',
   password: 'sami-123',
+};
+
+// supertest لا يجمع الردود الثنائية (ملف Excel) في body تلقائيًّا؛ هذا يجمعها في Buffer.
+const binary = (
+  res: request.Response,
+  callback: (error: Error | null, body: Buffer) => void,
+) => {
+  const stream = res as unknown as NodeJS.ReadableStream;
+  const chunks: Buffer[] = [];
+  stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+  stream.on('end', () => callback(null, Buffer.concat(chunks)));
 };
 
 describe('نظام الحضور (e2e)', () => {
@@ -67,6 +79,14 @@ describe('نظام الحضور (e2e)', () => {
 
   // ───────────── المصادقة ─────────────
 
+  it('سياسة CSP لا تجبر المتصفح على https (ليعمل على عنوان الشبكة المحلية)', async () => {
+    const res = await api().get('/').expect(200);
+    expect(res.headers['content-security-policy']).toContain("script-src 'self'");
+    expect(res.headers['content-security-policy']).not.toContain(
+      'upgrade-insecure-requests',
+    );
+  });
+
   it('يرفض أي طلب بلا توكن (401)', async () => {
     await api().get('/api/users').expect(401);
     await api().post('/api/attendance/check-in').expect(401);
@@ -88,6 +108,35 @@ describe('نظام الحضور (e2e)', () => {
     const res = await api().post('/api/auth/login').send(ADMIN).expect(200);
     expect(res.body.user.role).toBe('admin');
     adminToken = res.body.accessToken;
+  });
+
+  // ───────────── الإعدادات ─────────────
+
+  it('أيام العطلة افتراضيًّا الجمعة والسبت، والمدير يغيّرها ضمن قيم صالحة', async () => {
+    const res = await api()
+      .get('/api/settings')
+      .set(bearer(adminToken))
+      .expect(200);
+    expect(res.body).toEqual({ weekendDays: [5, 6] });
+
+    await api()
+      .patch('/api/settings')
+      .set(bearer(adminToken))
+      .send({ weekendDays: [7] })
+      .expect(400);
+    await api()
+      .patch('/api/settings')
+      .set(bearer(adminToken))
+      .send({ weekendDays: [0, 1, 2, 3, 4, 5, 6] })
+      .expect(400);
+
+    // بلا عطلة لبقية الاختبارات، فلا تتغيّر نتائجها إن شُغّلت يوم جمعة.
+    const cleared = await api()
+      .patch('/api/settings')
+      .set(bearer(adminToken))
+      .send({ weekendDays: [] })
+      .expect(200);
+    expect(cleared.body).toEqual({ weekendDays: [] });
   });
 
   // ───────────── إدارة الموظفين ─────────────
@@ -327,6 +376,40 @@ describe('نظام الحضور (e2e)', () => {
       .expect(400);
   });
 
+  it('الانصراف يقبل ملاحظة اختيارية تظهر في الكشف اليومي، ولا يقبل وقتًا', async () => {
+    // السجل أُعيد فتحه في الاختبار السابق، فالموظف يستطيع الانصراف مجددًا.
+    await api()
+      .post('/api/attendance/check-out')
+      .set(bearer(employeeToken))
+      .send({ note: 'x'.repeat(501) })
+      .expect(400);
+    await api()
+      .post('/api/attendance/check-out')
+      .set(bearer(employeeToken))
+      .send({ note: 'خرجت مبكرًا لموعد', checkOut: '2020-01-01T00:00:00Z' })
+      .expect(400);
+
+    const res = await api()
+      .post('/api/attendance/check-out')
+      .set(bearer(employeeToken))
+      .send({ note: '  خرجت مبكرًا لموعد  ' })
+      .expect(200);
+    expect(res.body.note).toBe('خرجت مبكرًا لموعد');
+
+    const daily = await api()
+      .get('/api/attendance/daily')
+      .set(bearer(adminToken))
+      .expect(200);
+    expect(daily.body.rows[0].attendance.note).toBe('خرجت مبكرًا لموعد');
+
+    // نعيده مفتوحًا كما كان، فلا تتأثر الاختبارات التالية.
+    await api()
+      .patch(`/api/attendance/${attendanceId}`)
+      .set(bearer(adminToken))
+      .send({ checkOut: null })
+      .expect(200);
+  });
+
   it('المدير يضيف سجلًّا ليوم نسيه الموظف، ولا يكرّره', async () => {
     const body = {
       employee: employeeId,
@@ -385,6 +468,120 @@ describe('نظام الحضور (e2e)', () => {
     expect(new Date(res.body.items[0].checkOut).getTime()).toBe(
       checkIn.getTime() + 1000,
     );
+  });
+
+  // ───────────── تصدير Excel ─────────────
+
+  const exportQuery = () => ({
+    employee: employeeId,
+    from: '2026-01-05',
+    to: '2026-01-06',
+  });
+
+  it('تصدير Excel لموظف في فترة: سطر لكل يوم ومجموع الساعات في آخره', async () => {
+    const res = await api()
+      .get('/api/attendance/export')
+      .query(exportQuery())
+      .set(bearer(adminToken))
+      .buffer(true)
+      .parse(binary)
+      .expect(200);
+    expect(res.headers['content-type']).toContain('spreadsheetml');
+    expect(res.headers['content-disposition']).toContain(
+      `attendance-${EMPLOYEE.username}-2026-01-05_2026-01-06.xlsx`,
+    );
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(res.body);
+    const sheet = workbook.worksheets[0];
+
+    // الصف 5 رؤوس الأعمدة، ثم يوما 5 و6 يناير، ثم المجموع.
+    expect(sheet.getCell('A6').value).toEqual(new Date('2026-01-05T00:00:00Z'));
+    // 08:00 بتوقيت دمشق، لا 05:00 كما هو مخزَّن بتوقيت UTC.
+    // exceljs يقرأ خلية الوقت تاريخًا في "اليوم صفر" عند Excel (1899-12-30).
+    expect(sheet.getCell('C6').value).toEqual(new Date('1899-12-30T08:00:00Z'));
+    // المدة نص "ساعات:دقائق" يظهر كما هو في Excel و Numbers، والعشري رقم.
+    expect(sheet.getCell('E6').value).toBe('8:00');
+    expect(sheet.getCell('F6').value).toBe(8);
+    expect(sheet.getCell('A8').value).toBe('المجموع');
+
+    // 8 ساعات (5 يناير) + ثانية واحدة (سجل 6 يناير المغلق تلقائيًّا).
+    expect(sheet.getCell('E8').value).toBe('8:00');
+    const total = sheet.getCell('F8').value as ExcelJS.CellFormulaValue;
+    expect(total.formula).toBe('SUM(F6:F7)');
+    expect(total.result).toBeCloseTo(8 + 1 / 3600, 8);
+  });
+
+  it('التصدير للإدارة فقط، ويرفض فترة مقلوبة أو بلا موظف', async () => {
+    await api()
+      .get('/api/attendance/export')
+      .query(exportQuery())
+      .set(bearer(employeeToken))
+      .expect(403);
+    await api()
+      .get('/api/attendance/export')
+      .query({ ...exportQuery(), to: '2026-01-01' })
+      .set(bearer(adminToken))
+      .expect(400);
+    await api()
+      .get('/api/attendance/export')
+      .query({ ...exportQuery(), employee: undefined })
+      .set(bearer(adminToken))
+      .expect(400);
+  });
+
+  it('سجلات أيام العطلة تبقى ظاهرة لكنها خارج المجاميع وملف Excel', async () => {
+    // الاثنين عطلة: سجل 5 يناير 2026 (اثنين، 8 ساعات) يخرج من الحساب.
+    await api()
+      .patch('/api/settings')
+      .set(bearer(adminToken))
+      .send({ weekendDays: [1] })
+      .expect(200);
+
+    const mine = await api()
+      .get('/api/attendance/me')
+      .query({ from: '2026-01-05' })
+      .set(bearer(employeeToken))
+      .expect(200);
+    expect(mine.body.total).toBe(1);
+    expect(mine.body.workedMs).toBe(0);
+
+    const daily = await api()
+      .get('/api/attendance/daily')
+      .query({ date: '2026-01-05' })
+      .set(bearer(adminToken))
+      .expect(200);
+    expect(daily.body.holiday).toBe(true);
+
+    const res = await api()
+      .get('/api/attendance/export')
+      .query(exportQuery())
+      .set(bearer(adminToken))
+      .buffer(true)
+      .parse(binary)
+      .expect(200);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(res.body);
+    const sheet = workbook.worksheets[0];
+    expect(sheet.getCell('A4').value).toContain('الاثنين');
+    // بقي يوم 6 يناير وحده، ثم المجموع.
+    expect(sheet.getCell('A6').value).toEqual(new Date('2026-01-06T00:00:00Z'));
+    expect(sheet.getCell('A7').value).toBe('المجموع');
+    expect(sheet.getCell('B7').value).toBe('عدد الأيام: 1');
+
+    // الموظف يقرأ الإعدادات ولا يغيّرها.
+    await api().get('/api/settings').set(bearer(employeeToken)).expect(200);
+    await api()
+      .patch('/api/settings')
+      .set(bearer(employeeToken))
+      .send({ weekendDays: [] })
+      .expect(403);
+
+    await api()
+      .patch('/api/settings')
+      .set(bearer(adminToken))
+      .send({ weekendDays: [] })
+      .expect(200);
   });
 
   it('معرّف غير صالح يُرجع 400 لا 500', async () => {

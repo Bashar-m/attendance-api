@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Query,
+  StreamableFile,
 } from '@nestjs/common';
 import { ParseObjectIdPipe } from '@nestjs/mongoose';
 import { Types } from 'mongoose';
@@ -15,13 +16,16 @@ import type { AuthUser } from '../auth/auth-user.type.js';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { Roles } from '../common/decorators/roles.decorator.js';
 import { Role } from '../users/role.enum.js';
+import { XLSX_TYPE } from './attendance.export.js';
 import { AttendanceService } from './attendance.service.js';
+import { AttendanceCheckOutDto } from './dto/attendance.checkout.dto.js';
 import {
   AttendanceCreateDto,
   AttendanceUpdateDto,
 } from './dto/attendance.manual.dto.js';
 import {
   AttendanceDailyQueryDto,
+  AttendanceExportQueryDto,
   AttendanceQueryDto,
 } from './dto/attendance.query.dto.js';
 
@@ -45,11 +49,15 @@ export class AttendanceController {
   }
 
   // 200 لا 201: الانصراف يعدّل سجلًّا موجودًا ولا ينشئ جديدًا.
+  // الجسم اختياري ويحمل الملاحظة فقط؛ الوقت يبقى من ساعة الخادم.
   @Roles(Role.Employee)
   @HttpCode(HttpStatus.OK)
   @Post('check-out')
-  checkOut(@CurrentUser() user: AuthUser) {
-    return this.attendanceService.checkOut(user.id);
+  checkOut(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: AttendanceCheckOutDto,
+  ) {
+    return this.attendanceService.checkOut(user.id, dto.note);
   }
 
   @Roles(Role.Employee)
@@ -78,6 +86,18 @@ export class AttendanceController {
   @Get()
   findAll(@Query() query: AttendanceQueryDto) {
     return this.attendanceService.findMany(query);
+  }
+
+  // StreamableFile: الرد ملف لا JSON. Nest يضبط الترويستين ويرسل البايتات كما هي.
+  @Roles(Role.Admin)
+  @Get('export')
+  async exportEmployee(@Query() query: AttendanceExportQueryDto) {
+    const { file, filename } =
+      await this.attendanceService.exportEmployee(query);
+    return new StreamableFile(file, {
+      type: XLSX_TYPE,
+      disposition: `attachment; filename="${filename}"`,
+    });
   }
 
   @Roles(Role.Admin)

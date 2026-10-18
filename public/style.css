@@ -116,7 +116,8 @@ label.inline {
   margin: 0;
 }
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: var(--text);
   background: var(--surface);
@@ -125,8 +126,12 @@ select {
   padding: 9px 12px;
   min-width: 0;
 }
+textarea {
+  resize: vertical;
+}
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 .btn:focus-visible,
 .tab:focus-visible {
   outline: 3px solid rgb(15 118 110 / 30%);
@@ -325,6 +330,13 @@ td.empty {
 td.actions {
   text-align: end;
 }
+/* الملاحظة نص حر قد يطول: يلتفّ داخل الخلية ويحفظ أسطره بدل أن يمدّ الجدول */
+td.note {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  min-width: 160px;
+  max-width: 320px;
+}
 td.actions .btn + .btn {
   margin-inline-start: 6px;
 }
@@ -348,6 +360,10 @@ td.actions .btn + .btn {
   background: var(--warn-bg);
   color: var(--warn);
 }
+.badge.holiday {
+  background: #ece9f8;
+  color: #4c3d8f;
+}
 .badge.off {
   background: var(--danger-bg);
   color: var(--danger);
@@ -356,6 +372,17 @@ td.actions .btn + .btn {
   color: var(--muted);
   font-size: 0.78rem;
   margin-inline-start: 6px;
+}
+
+/* أيام الأسبوع في الإعدادات */
+.day-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  margin: 14px 0;
+}
+.day-checks label {
+  color: var(--text);
 }
 
 /* ───────── نافذة التعديل ───────── */

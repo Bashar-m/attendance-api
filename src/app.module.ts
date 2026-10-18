@@ -4,6 +4,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AttendanceModule } from './attendance/attendance.module.js';
 import { AuthModule } from './auth/auth.module.js';
+import { SettingsModule } from './settings/settings.module.js';
 import { UsersModule } from './users/users.module.js';
 
 /**
@@ -12,6 +13,7 @@ import { UsersModule } from './users/users.module.js';
  *   users       من هم المستخدمون (والمدير ينشئهم)
  *   auth        من أنت؟ وهل يُسمح لك؟
  *   attendance  الحضور والانصراف وكشوف الإدارة
+ *   settings    إعدادات تضبطها الإدارة (أيام العطلة الأسبوعية)
  */
 @Module({
   imports: [
@@ -35,6 +37,7 @@ import { UsersModule } from './users/users.module.js';
     UsersModule,
     AuthModule,
     AttendanceModule,
+    SettingsModule,
   ],
 })
 export class AppModule {}

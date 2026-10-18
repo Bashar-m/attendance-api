@@ -50,6 +50,21 @@ export class AttendanceQueryDto {
   limit: number = 31;
 }
 
+/**
+ * GET /attendance/export?employee=<id>&from=2026-10-05&to=2026-11-05
+ * ملف Excel لموظف واحد. الحقول الثلاثة إلزامية: الملف دائمًا عن فترة محدّدة.
+ */
+export class AttendanceExportQueryDto {
+  @IsMongoId({ message: 'اختر الموظف' })
+  employee: string;
+
+  @Matches(WORK_DATE_PATTERN, { message: DATE_MESSAGE })
+  from: string;
+
+  @Matches(WORK_DATE_PATTERN, { message: DATE_MESSAGE })
+  to: string;
+}
+
 /** GET /attendance/daily?date=2026-10-07  (بدون date = اليوم) */
 export class AttendanceDailyQueryDto {
   @IsOptional()

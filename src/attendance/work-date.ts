@@ -26,6 +26,14 @@ export function toWorkDate(date: Date, timeZone: string): string {
 }
 
 /**
+ * يوم الأسبوع ليوم العمل: 0 = الأحد ... 5 = الجمعة، 6 = السبت.
+ * workDate تاريخ بلا وقت، فنقرؤه كـ UTC لئلا تزيحه منطقة الخادم يومًا.
+ */
+export function weekdayOf(workDate: string): number {
+  return new Date(`${workDate}T00:00:00Z`).getUTCDay();
+}
+
+/**
  * ميزة جانبية لهذه الصيغة: الترتيب الأبجدي = الترتيب الزمني،
  * فالمقارنة النصية "2026-10-01" <= workDate <= "2026-10-31" تعمل كفلتر تاريخ.
  */

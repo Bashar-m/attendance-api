@@ -24,6 +24,11 @@ export class Attendance {
   @Prop({ type: Date, default: null })
   checkOut: Date | null;
 
+  // ملاحظة اختيارية يكتبها الموظف عند انصرافه، وتظهر للإدارة في كشف اليوم.
+  // null = لم يكتب شيئًا.
+  @Prop({ type: String, default: null })
+  note: string | null;
+
   // أثر التعديل اليدوي: من عدّل السجل من الإدارة ومتى.
   // null = السجل كما سجّله الموظف بضغطة الزر، لم يلمسه أحد.
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: User.name, default: null })

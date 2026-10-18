@@ -65,6 +65,18 @@ const formatTime = (iso) => (iso ? timeFormat.format(new Date(iso)) : '—');
 // workDate نص "YYYY-MM-DD" بلا وقت؛ نقرؤه كـ UTC ونعرضه كـ UTC فلا ينزاح يومًا.
 const formatDay = (workDate) => dayFormat.format(new Date(`${workDate}T00:00:00Z`));
 
+// بترقيم JavaScript كما يخزّنه الخادم: 0 = الأحد ... 6 = السبت
+const WEEKDAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+const isHoliday = (workDate) =>
+  state.weekendDays.includes(new Date(`${workDate}T00:00:00Z`).getUTCDay());
+
+/** علامة يوم العطلة: السجل يبقى ظاهرًا، لكنه خارج مجموع الساعات. */
+function holidayMark(workDate) {
+  return isHoliday(workDate)
+    ? el('span', { className: 'edited', title: 'يوم عطلة: لا يدخل في مجموع الساعات' }, '(عطلة)')
+    : null;
+}
+
 /** مدة بالميلي ثانية => "7س 05د" */
 function formatMs(ms) {
   const minutes = Math.max(0, Math.floor(ms / 60_000));
@@ -118,6 +130,8 @@ const state = {
   today: null,
   log: { page: 1, pages: 1 },
   editing: null,
+  employees: [], // للإدارة: قائمة الموظفين في نافذة التصدير
+  weekendDays: [], // أيام العطلة الأسبوعية من إعدادات الخادم
 };
 
 const serverNow = () => new Date(Date.now() + state.clockOffset);
@@ -126,7 +140,7 @@ const serverNow = () => new Date(Date.now() + state.clockOffset);
  * كل طلب إلى الخادم يمر من هنا، فمعالجة التوكن والأخطاء مكتوبة مرة واحدة.
  * عند الفشل ترمي Error رسالته هي رسالة الخادم (العربية) جاهزة للعرض.
  */
-async function api(path, { method = 'GET', body } = {}) {
+async function request(path, { method = 'GET', body } = {}) {
   const headers = {};
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -137,9 +151,9 @@ async function api(path, { method = 'GET', body } = {}) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-  const data = await response.json().catch(() => null);
+  if (response.ok) return response;
 
-  if (response.ok) return data;
+  const data = await response.json().catch(() => null);
 
   // 401 ونحن نحمل توكنًا = انتهت صلاحيته أو عُطّل الحساب => عُد لشاشة الدخول
   if (response.status === 401 && state.token) {
@@ -152,6 +166,27 @@ async function api(path, { method = 'GET', body } = {}) {
   // class-validator يرجع message كمصفوفة أخطاء، وبقية الأخطاء كنص واحد
   const message = Array.isArray(data?.message) ? data.message.join('، ') : data?.message;
   throw new Error(message || `خطأ غير متوقع (${response.status})`);
+}
+
+/** طلب يُرجع JSON، وهو حال كل المسارات ما عدا تصدير الملفات. */
+async function api(path, options) {
+  const response = await request(path, options);
+  return response.json().catch(() => null);
+}
+
+/**
+ * يطلب ملفًّا ويحفظه على الجهاز.
+ * رابط عادي <a href> لا يكفي: الطلب يحتاج ترويسة التوكن، فنجلب الملف
+ * بـ fetch ثم نعطيه للمتصفح كرابط مؤقت (blob) ونضغطه.
+ */
+async function download(path) {
+  const response = await request(path);
+  const disposition = response.headers.get('Content-Disposition') ?? '';
+  const name = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'download';
+  const url = URL.createObjectURL(await response.blob());
+  el('a', { href: url, download: name }).click();
+  // نترك للمتصفح لحظة يبدأ فيها التنزيل قبل تحرير الرابط من الذاكرة.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ═════════════════════ 3. الدخول والتنقل ═════════════════════
@@ -175,6 +210,7 @@ function logout() {
 
 async function enter() {
   $('user-name').textContent = state.user.name;
+  ({ weekendDays: state.weekendDays } = await api('/settings'));
   // إخفاء شاشة الإدارة عن الموظف هنا للراحة فقط وليس حماية:
   // الحماية الحقيقية في الخادم (RolesGuard)، وأي أحد يستطيع تعديل هذا الملف.
   if (state.user.role === 'admin') {
@@ -244,7 +280,7 @@ async function loadMine() {
     $('my-records'),
     mine.items.map((record) =>
       el('tr', {},
-        el('td', {}, formatDay(record.workDate)),
+        el('td', {}, formatDay(record.workDate), holidayMark(record.workDate)),
         el('td', {}, formatTime(record.checkIn)),
         el('td', {}, formatTime(record.checkOut)),
         el('td', {}, record.checkOut ? formatDuration(record.checkIn, record.checkOut) : '—'),
@@ -298,24 +334,53 @@ function renderToday() {
 }
 
 $('punch-button').addEventListener('click', async () => {
+  // الانصراف لا يُتراجع عنه إلا عبر الإدارة، فنطلب تأكيدًا
+  // في نافذة فيها حقل الملاحظة الاختيارية.
+  if (state.today.attendance) {
+    $('checkout-form').reset();
+    showError($('checkout-error'), null);
+    $('checkout-dialog').showModal();
+    return;
+  }
+
   const button = $('punch-button');
-  const checkingOut = Boolean(state.today.attendance);
-
-  // الانصراف لا يُتراجع عنه إلا عبر الإدارة، فنطلب تأكيدًا.
-  if (checkingOut && !confirm('تأكيد تسجيل الانصراف؟')) return;
-
   // نعطّل الزر فورًا لمنع الضغطة المزدوجة.
   // (والخادم يمنعها أيضًا: لا نعتمد على الواجهة وحدها أبدًا.)
   button.disabled = true;
   $('punch-message').textContent = '';
   try {
     // الطلب بلا جسم: لا نرسل وقتًا ولا هوية. الخادم يعرف الاثنين.
-    await api(checkingOut ? '/attendance/check-out' : '/attendance/check-in', { method: 'POST' });
-    $('punch-message').textContent = checkingOut ? 'سُجّل انصرافك' : 'سُجّل حضورك';
+    await api('/attendance/check-in', { method: 'POST' });
+    $('punch-message').textContent = 'سُجّل حضورك';
   } catch (error) {
     $('punch-message').textContent = error.message;
   }
   await loadEmployee();
+});
+
+$('checkout-cancel').addEventListener('click', () => $('checkout-dialog').close());
+
+$('checkout-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submit = form.querySelector('[type="submit"]');
+  const note = form.note.value.trim();
+
+  submit.disabled = true; // منع الضغطة المزدوجة
+  showError($('checkout-error'), null);
+  $('punch-message').textContent = '';
+  try {
+    // الجسم يحمل الملاحظة فقط إن وُجدت؛ الوقت والهوية من الخادم.
+    await api('/attendance/check-out', { method: 'POST', body: note ? { note } : undefined });
+    $('checkout-dialog').close();
+    $('punch-message').textContent = 'سُجّل انصرافك';
+    await loadEmployee();
+  } catch (error) {
+    // تبقى النافذة مفتوحة حتى لا تضيع الملاحظة المكتوبة.
+    showError($('checkout-error'), error.message);
+  } finally {
+    submit.disabled = false;
+  }
 });
 
 // ═════════════════════ 5. شاشة الإدارة ═════════════════════
@@ -329,6 +394,7 @@ for (const tab of document.querySelectorAll('.tab')) {
     }
     if (tab.dataset.tab === 'log') loadLog();
     if (tab.dataset.tab === 'daily') loadDaily();
+    if (tab.dataset.tab === 'settings') renderSettings();
   });
 }
 
@@ -341,18 +407,29 @@ function editedMark(record) {
     : null;
 }
 
+/** خلية ملاحظة الموظف عند انصرافه، أو "—" إن لم يكتب شيئًا. */
+function noteCell(record) {
+  return record?.note
+    ? el('td', { className: 'note' }, record.note)
+    : el('td', { className: 'muted' }, '—');
+}
+
 // ───── كشف اليوم ─────
 async function loadDaily() {
   const date = $('daily-date').value;
   const data = await api(`/attendance/daily${date ? `?date=${date}` : ''}`);
   $('daily-date').value = data.workDate;
+  $('daily-holiday').hidden = !data.holiday;
 
-  const counts = { present: 0, left: 0, absent: 0 };
+  const counts = { present: 0, left: 0, absent: 0, holiday: 0 };
 
   const rows = data.rows.map(({ employee, attendance }) => {
-    const status = !attendance ? 'absent' : attendance.checkOut ? 'left' : 'present';
+    // في يوم العطلة من لم يحضر ليس غائبًا.
+    const status = attendance
+      ? (attendance.checkOut ? 'left' : 'present')
+      : (data.holiday ? 'holiday' : 'absent');
     counts[status] += 1;
-    const label = { absent: 'لم يحضر', present: 'في الدوام', left: 'انصرف' }[status];
+    const label = { absent: 'لم يحضر', present: 'في الدوام', left: 'انصرف', holiday: 'عطلة' }[status];
 
     const button = el('button', { className: 'btn ghost small', type: 'button' },
       attendance ? 'تعديل' : 'تسجيل يدوي');
@@ -365,6 +442,7 @@ async function loadDaily() {
       el('td', {}, formatTime(attendance?.checkIn), editedMark(attendance)),
       el('td', {}, formatTime(attendance?.checkOut)),
       el('td', {}, attendance ? formatDuration(attendance.checkIn, attendance.checkOut) : '—'),
+      noteCell(attendance),
       el('td', { className: 'actions' }, button),
     );
   });
@@ -372,7 +450,7 @@ async function loadDaily() {
   $('stat-present').textContent = counts.present;
   $('stat-left').textContent = counts.left;
   $('stat-absent').textContent = counts.absent;
-  fillTable($('daily-rows'), rows, 'لا يوجد موظفون بعد. أضفهم من تبويب «الموظفون».', 6);
+  fillTable($('daily-rows'), rows, 'لا يوجد موظفون بعد. أضفهم من تبويب «الموظفون».', 7);
 }
 
 $('daily-date').addEventListener('change', loadDaily);
@@ -393,7 +471,10 @@ async function loadUsers() {
         user.isActive ? 'تعطيل' : 'تفعيل');
       toggle.addEventListener('click', () => toggleActive(user));
 
-      actions.append(reset, toggle);
+      const exportButton = el('button', { className: 'btn ghost small', type: 'button' }, 'تصدير Excel');
+      exportButton.addEventListener('click', () => openExport({ employee: user._id }));
+
+      actions.append(exportButton, reset, toggle);
     }
 
     return el('tr', {},
@@ -407,12 +488,12 @@ async function loadUsers() {
   });
   fillTable($('user-rows'), rows, 'لا يوجد مستخدمون', 5);
 
+  state.employees = users.filter((user) => user.role === 'employee');
+
   // قائمة الموظفين في فلتر السجل
   $('log-employee').replaceChildren(
     el('option', { value: '' }, 'الكل'),
-    ...users
-      .filter((user) => user.role === 'employee')
-      .map((user) => el('option', { value: user._id }, user.name)),
+    ...state.employees.map((user) => el('option', { value: user._id }, user.name)),
   );
 }
 
@@ -502,15 +583,16 @@ async function loadLog() {
       openEdit({ workDate: record.workDate, employee: record.employee, attendance: record }));
 
     return el('tr', {},
-      el('td', {}, formatDay(record.workDate)),
+      el('td', {}, formatDay(record.workDate), holidayMark(record.workDate)),
       el('td', {}, record.employee?.name ?? '(محذوف)'),
       el('td', {}, formatTime(record.checkIn), editedMark(record)),
       el('td', {}, formatTime(record.checkOut)),
       el('td', {}, record.checkOut ? formatDuration(record.checkIn, record.checkOut) : '—'),
+      noteCell(record),
       el('td', { className: 'actions' }, button),
     );
   });
-  fillTable($('log-rows'), rows, 'لا توجد سجلات مطابقة', 6);
+  fillTable($('log-rows'), rows, 'لا توجد سجلات مطابقة', 7);
 
   $('log-page').textContent = `صفحة ${state.log.page} من ${state.log.pages} — ${data.total} سجل`;
   $('log-prev').disabled = state.log.page <= 1;
@@ -580,6 +662,98 @@ $('edit-form').addEventListener('submit', async (event) => {
   } catch (error) {
     showError($('edit-error'), error.message);
   }
+});
+
+// ───── الإعدادات: أيام العطلة ─────
+
+const WEEK_ORDER = [6, 0, 1, 2, 3, 4, 5]; // نعرض الأسبوع بدءًا من السبت
+
+function renderSettings() {
+  $('weekend-days').replaceChildren(
+    ...WEEK_ORDER.map((day) =>
+      el('label', { className: 'inline' },
+        el('input', {
+          type: 'checkbox',
+          name: 'weekendDays',
+          value: day,
+          checked: state.weekendDays.includes(day),
+        }),
+        WEEKDAYS[day],
+      )),
+  );
+  $('settings-message').textContent = '';
+  showError($('settings-error'), null);
+}
+
+$('settings-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const boxes = event.currentTarget.querySelectorAll('[name="weekendDays"]:checked');
+  const weekendDays = [...boxes].map((box) => Number(box.value));
+
+  $('settings-message').textContent = '';
+  showError($('settings-error'), null);
+  try {
+    ({ weekendDays: state.weekendDays } = await api('/settings', {
+      method: 'PATCH',
+      body: { weekendDays },
+    }));
+    $('settings-message').textContent = 'تم الحفظ';
+  } catch (error) {
+    showError($('settings-error'), error.message);
+  }
+});
+
+// ───── تصدير Excel ─────
+
+/** تاريخ بتوقيت هذا الجهاز بصيغة YYYY-MM-DD، كما يقرؤه <input type="date">. */
+function localDate(date = new Date()) {
+  const pad = (number) => String(number).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** الفترة الافتراضية: من أول الشهر الحالي حتى اليوم. */
+function openExport({ employee = '', from = '', to = '' } = {}) {
+  const form = $('export-form');
+  const today = localDate();
+
+  form.employee.replaceChildren(
+    el('option', { value: '' }, 'اختر الموظف'),
+    ...state.employees.map((user) =>
+      el('option', { value: user._id }, user.isActive ? user.name : `${user.name} (معطّل)`)),
+  );
+  form.employee.value = employee;
+  form.from.value = from || `${today.slice(0, 8)}01`;
+  // "من" وحده في فلتر السجل = ذلك اليوم فقط، فنصدّر ذلك اليوم.
+  form.to.value = to || from || today;
+
+  showError($('export-error'), null);
+  $('export-dialog').showModal();
+}
+
+$('export-cancel').addEventListener('click', () => $('export-dialog').close());
+
+$('export-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submit = form.querySelector('[type="submit"]');
+
+  submit.disabled = true;
+  showError($('export-error'), null);
+  try {
+    // حقول النموذج الثلاثة (employee, from, to) هي نفسها معاملات الرابط.
+    await download(`/attendance/export?${new URLSearchParams(new FormData(form))}`);
+    $('export-dialog').close();
+  } catch (error) {
+    showError($('export-error'), error.message);
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+// زر التصدير في تبويب السجل يبدأ من الموظف والفترة المختارين في الفلتر.
+$('log-export').addEventListener('click', () => {
+  const form = $('log-form');
+  openExport({ employee: form.employee.value, from: form.from.value, to: form.to.value });
 });
 
 // ═════════════════════ البداية ═════════════════════

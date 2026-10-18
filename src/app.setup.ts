@@ -16,7 +16,20 @@ export function setupApp(app: NestExpressApplication): void {
   // helmet يضيف ترويسات أمان قياسية للردود. من أهمها Content-Security-Policy:
   // المتصفح لا ينفّذ إلا سكربتات من موقعنا نفسه، وهذا يقطع الطريق على
   // معظم هجمات XSS. (ولهذا لا يوجد أي سكربت مكتوب داخل ملف HTML في الواجهة.)
-  app.use(helmet());
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          // helmet يضيف upgrade-insecure-requests افتراضيًّا: المتصفح يطلب
+          // app.js و style.css وطلبات الـ API بـ https حتى لو فُتحت الصفحة بـ http.
+          // على localhost يُستثنى، لكن على عنوان الشبكة (http://192.168.x.x:3000)
+          // تفشل كلها فتظهر الصفحة بلا تنسيق ولا تعمل. روابطنا كلها نسبية
+          // فتتبع بروتوكول الصفحة أصلًا، ولا نخسر شيئًا بإلغائه.
+          upgradeInsecureRequests: null,
+        },
+      },
+    }),
+  );
 
   // كل مسارات الـ API تبدأ بـ /api، والجذر / يبقى لملفات الواجهة.
   app.setGlobalPrefix('api');
