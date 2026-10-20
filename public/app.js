@@ -174,8 +174,11 @@ async function request(path, { method = 'GET', body } = {}) {
 
   // 401 ونحن نحمل توكنًا = انتهت صلاحيته أو عُطّل الحساب => عُد لشاشة الدخول
   if (response.status === 401 && state.token) {
+    const message = 'انتهت الجلسة، سجّل دخولك من جديد';
     logout();
-    throw new Error('انتهت الجلسة، سجّل دخولك من جديد');
+    // الرسالة على شاشة الدخول نفسها، وإلا وجد المستخدم نفسه هناك بلا تفسير.
+    showError($('login-error'), message);
+    throw new Error(message);
   }
   if (response.status === 429) {
     throw new Error('محاولات كثيرة، انتظر دقيقة ثم حاول');
@@ -222,6 +225,8 @@ function logout() {
   state.token = null;
   state.user = null;
   clearInterval(clockTimer);
+  // نافذة مفتوحة (انصراف، تعديل...) تبقى فوق شاشة الدخول وتحجبها إن لم نغلقها.
+  for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
   show('login');
 }
 
@@ -372,7 +377,8 @@ $('punch-button').addEventListener('click', async () => {
   } catch (error) {
     $('punch-message').textContent = error.message;
   }
-  await loadEmployee();
+  // انتهت الجلسة أثناء الطلب => نحن الآن في شاشة الدخول، فلا شيء نحدّثه.
+  if (state.token) await loadEmployee();
 });
 
 $('checkout-cancel').addEventListener('click', () => $('checkout-dialog').close());
