@@ -114,6 +114,7 @@ export async function buildAttendanceWorkbook({
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE6EAEE' } };
     cell.border = { bottom: { style: 'thin' } };
   });
+  
 
   let totalMs = 0;
   for (const record of records) {
